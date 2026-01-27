@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MiniNote</title>
+<style>
+    /* 界面極簡化樣式 */
+    body { margin: 0; font-family: sans-serif; display: flex; height: 100vh; overflow: hidden; color: #333; }
+    #side { width: 300px; border-right: 1px solid #ccc; display: flex; flex-direction: column; background: #f9f9f9; }
+    #main { flex: 1; display: flex; flex-direction: column; padding: 20px; }
+    
+    /* 頂部工具欄 */
+    .bar { padding: 10px; border-bottom: 1px solid #ddd; display: flex; gap: 5px; }
+    input, select, button { padding: 5px; border: 1px solid #ddd; outline: none; background: #fff; }
+    button { cursor: pointer; }
+    #q { flex: 1; } 
+    
+    /* 筆記列表 */
+    #list { list-style: none; padding: 0; margin: 0; overflow-y: auto; flex: 1; }
+    #list li { padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #list li:hover { background: #eee; }
+    #list li.active { background: #ddd; font-weight: bold; }
+    
+    /* 編輯區 */
+    #note-t { font-size: 1.2em; font-weight: bold; margin-bottom: 10px; border: none; border-bottom: 2px solid #eee; width: 100%; display: none; }
+    #note-c { flex: 1; border: none; resize: none; outline: none; font-size: 1em; line-height: 1.5; display: none; margin-bottom: 10px; }
+    
+    /* 刪除按鈕區域 */
+    #action-area { text-align: right; display: none; }
+    #del-btn { color: #d9534f; border: 1px solid #d9534f; background: transparent; font-size: 0.9em; }
+    #del-btn:hover { background: #d9534f; color: white; }
+
+    /* 空狀態提示 */
+    .empty { color: #999; text-align: center; margin-top: 50px; }
+
+    /* 手機適配：當屏幕窄時調整佈局 */
+    @media (max-width: 600px) {
+        #side { width: 120px; font-size: 0.9em; }
+        .bar { flex-wrap: wrap; }
+    }
+</style>
+</head>
+<body>
+
+<!-- 側邊欄 -->
+<div id="side">
+    <div class="bar">
+        <input id="q" placeholder="搜..." oninput="render()">
+        <select id="mode" onchange="render()">
+            <option value="all">全</option>
+            <option value="t">標題</option>
+            <option value="c">內容</option>
+        </select>
+        <button onclick="add()">+</button>
+    </div>
+    <ul id="list"></ul>
+</div>
+
+<!-- 主編輯區 -->
+<div id="main">
+    <div id="tip" class="empty">請選擇或創建筆記</div>
+    
+    <input id="note-t" placeholder="標題" oninput="save()">
+    <textarea id="note-c" placeholder="在此輸入內容..." oninput="save()"></textarea>
+    
+    <!-- 新增的刪除按鈕區域 -->
+    <div id="action-area">
+        <button id="del-btn" onclick="del()">刪除此筆記</button>
+    </div>
+</div>
+
+<script>
+    const K = 'mininotes_db';
+    let notes = JSON.parse(localStorage.getItem(K) || '[]');
+    let activeIdx = -1; 
+
+    const el = {
+        list: document.getElementById('list'),
+        t: document.getElementById('note-t'),
+        c: document.getElementById('note-c'),
+        q: document.getElementById('q'),
+        mode: document.getElementById('mode'),
+        tip: document.getElementById('tip'),
+        actions: document.getElementById('action-area') // 引用按鈕區域
+    };
+
+    function render() {
+        el.list.innerHTML = '';
+        const query = el.q.value.toLowerCase();
+        const mode = el.mode.value;
+
+        notes.forEach((n, idx) => {
+            let match = false;
+            if (!query) match = true;
+            else {
+                if (mode === 'all') match = (n.t+n.c).toLowerCase().includes(query);
+                else if (mode === 't') match = n.t.toLowerCase().includes(query);
+                else if (mode === 'c') match = n.c.toLowerCase().includes(query);
+            }
+
+            if (match) {
+                const li = document.createElement('li');
+                li.textContent = n.t || '(無標題)'; 
+                if (idx === activeIdx) li.className = 'active';
+                li.onclick = () => select(idx);
+                el.list.appendChild(li);
+            }
+        });
+        
+        // 控制顯示/隱藏
+        const hasActive = activeIdx > -1 && activeIdx < notes.length;
+        el.tip.style.display = hasActive ? 'none' : 'block';
+        
+        // 批量控制編輯控件和刪除按鈕的顯示
+        const displayStyle = hasActive ? 'block' : 'none';
+        el.t.style.display = displayStyle;
+        el.c.style.display = displayStyle;
+        el.actions.style.display = displayStyle;
+    }
+
+    function select(idx) {
+        activeIdx = idx;
+        el.t.value = notes[idx].t;
+        el.c.value = notes[idx].c;
+        render();
+    }
+
+    function add() {
+        notes.unshift({ t: '新筆記', c: '' });
+        saveData();
+        el.q.value = ''; 
+        select(0);
+    }
+
+    function save() {
+        if (activeIdx > -1) {
+            notes[activeIdx].t = el.t.value;
+            notes[activeIdx].c = el.c.value;
+            
+            const activeLi = el.list.querySelector('.active');
+            if(activeLi) activeLi.textContent = el.t.value || '(無標題)';
+            
+            saveData();
+        }
+    }
+
+    // 新增：刪除功能
+    function del() {
+        if (activeIdx === -1) return;
+        
+        // 防止誤刪確認
+        if (confirm('確定要永久刪除這條筆記嗎？')) {
+            // 從數組中移除
+            notes.splice(activeIdx, 1);
+            // 重置選中狀態
+            activeIdx = -1;
+            // 保存並刷新
+            saveData();
+            render();
+        }
+    }
+
+    function saveData() {
+        localStorage.setItem(K, JSON.stringify(notes));
+    }
+
+    render();
+</script>
+</body>
+</html>
