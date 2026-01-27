@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>元胞自動機 - 康威生命遊戲</title>
+    <style>
+        body {
+            background-color: #222;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            font-family: Arial, sans-serif;
+        }
+
+        h1 {
+            margin-bottom: 10px;
+        }
+
+        .controls {
+            margin-bottom: 15px;
+        }
+
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            margin: 0 5px;
+            transition: background 0.3s;
+        }
+
+        button:hover {
+            background-color: #45a049;
+        }
+
+        button.stop {
+            background-color: #f44336;
+        }
+
+        button.stop:hover {
+            background-color: #d32f2f;
+        }
+
+        canvas {
+            border: 2px solid #555;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            cursor: crosshair;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>康威生命遊戲 (Game of Life)</h1>
+    
+    <div class="controls">
+        <button id="startBtn">開始 / 暫停</button>
+        <button id="randomBtn">隨機重置</button>
+        <button id="clearBtn" style="background-color: #555;">清空</button>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const startBtn = document.getElementById('startBtn');
+        const randomBtn = document.getElementById('randomBtn');
+        const clearBtn = document.getElementById('clearBtn');
+
+        // 設定
+        const resolution = 10; // 每個細胞的大小 (像素)
+        canvas.width = 600;
+        canvas.height = 400;
+
+        // 計算網格行列數
+        const COLS = canvas.width / resolution;
+        const ROWS = canvas.height / resolution;
+
+        let grid = buildGrid();
+        let animationId = null;
+        let isRunning = false;
+
+        // 1. 建立網格 (二維數組)
+        function buildGrid() {
+            return new Array(COLS).fill(null)
+                .map(() => new Array(ROWS).fill(0));
+        }
+
+        // 2. 隨機填充網格
+        function randomizeGrid() {
+            for (let col = 0; col < COLS; col++) {
+                for (let row = 0; row < ROWS; row++) {
+                    grid[col][row] = Math.floor(Math.random() * 2);
+                }
+            }
+            render(grid);
+        }
+
+        // 3. 核心邏輯：計算下一代
+        function nextGen() {
+            const nextGrid = buildGrid();
+
+            for (let col = 0; col < COLS; col++) {
+                for (let row = 0; row < ROWS; row++) {
+                    const cell = grid[col][row];
+                    let numNeighbors = 0;
+
+                    // 檢查周圍 8 個鄰居
+                    for (let i = -1; i < 2; i++) {
+                        for (let j = -1; j < 2; j++) {
+                            if (i === 0 && j === 0) continue;
+                            
+                            // 處理邊界 (環形世界：從左邊出去會從右邊回來)
+                            const x_cell = (col + i + COLS) % COLS;
+                            const y_cell = (row + j + ROWS) % ROWS;
+
+                            numNeighbors += grid[x_cell][y_cell];
+                        }
+                    }
+
+                    // 康威生命遊戲規則
+                    // 規則 1: 孤單死 (活細胞鄰居少於2 -> 死)
+                    if (cell === 1 && numNeighbors < 2) {
+                        nextGrid[col][row] = 0;
+                    } 
+                    // 規則 2: 擁擠死 (活細胞鄰居多於3 -> 死)
+                    else if (cell === 1 && numNeighbors > 3) {
+                        nextGrid[col][row] = 0;
+                    } 
+                    // 規則 3: 繁殖 (死細胞鄰居等於3 -> 活)
+                    else if (cell === 0 && numNeighbors === 3) {
+                        nextGrid[col][row] = 1;
+                    } 
+                    // 規則 4: 保持 (活細胞鄰居為2或3 -> 活)
+                    else {
+                        nextGrid[col][row] = cell;
+                    }
+                }
+            }
+            return nextGrid;
+        }
+
+        // 4. 繪製畫面
+        function render(grid) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            for (let col = 0; col < COLS; col++) {
+                for (let row = 0; row < ROWS; row++) {
+                    const cell = grid[col][row];
+
+                    ctx.beginPath();
+                    ctx.rect(col * resolution, row * resolution, resolution, resolution);
+                    // 活細胞是白色，死細胞是透明(背景色)
+                    ctx.fillStyle = cell ? 'white' : '#222';
+                    ctx.fill();
+                    // 可選：繪製網格線
+                    // ctx.stroke(); 
+                }
+            }
+        }
+
+        // 5. 動畫循環
+        function update() {
+            grid = nextGen();
+            render(grid);
+            animationId = requestAnimationFrame(update);
+        }
+
+        // --- 事件監聽 ---
+
+        // 開始/暫停
+        startBtn.addEventListener('click', () => {
+            if (isRunning) {
+                cancelAnimationFrame(animationId);
+                startBtn.textContent = '開始';
+                startBtn.classList.remove('stop');
+            } else {
+                update();
+                startBtn.textContent = '暫停';
+                startBtn.classList.add('stop');
+            }
+            isRunning = !isRunning;
+        });
+
+        // 隨機生成
+        randomBtn.addEventListener('click', () => {
+            if (isRunning) {
+                cancelAnimationFrame(animationId);
+                isRunning = false;
+                startBtn.textContent = '開始';
+                startBtn.classList.remove('stop');
+            }
+            randomizeGrid();
+        });
+
+        // 清空
+        clearBtn.addEventListener('click', () => {
+             if (isRunning) {
+                cancelAnimationFrame(animationId);
+                isRunning = false;
+                startBtn.textContent = '開始';
+                startBtn.classList.remove('stop');
+            }
+            grid = buildGrid();
+            render(grid);
+        });
+
+        // 滑鼠點擊繪製細胞
+        canvas.addEventListener('mousedown', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+
+            const col = Math.floor(x / resolution);
+            const row = Math.floor(y / resolution);
+
+            // 切換狀態 (活變死，死變活)
+            if(grid[col] && grid[col][row] !== undefined) {
+                grid[col][row] = grid[col][row] ? 0 : 1;
+                render(grid);
+            }
+        });
+
+        // 初始化
+        randomizeGrid();
+    </script>
+</body>
+</html>
