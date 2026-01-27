@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>AI 股市神經網路進化版</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --panel: #1e293b;
+            --text: #e2e8f0;
+            --green: #22c55e;
+            --red: #ef4444;
+            --accent: #3b82f6;
+        }
+        body {
+            font-family: 'Courier New', Courier, monospace;
+            background: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+            max-width: 1000px;
+            margin-bottom: 20px;
+            align-items: center;
+        }
+        .main-view {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 20px;
+            width: 100%;
+            max-width: 1200px;
+        }
+        .chart-box {
+            background: var(--panel);
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid #334155;
+        }
+        canvas {
+            width: 100%;
+            height: 400px;
+            background: #000;
+        }
+        .stats-box {
+            background: var(--panel);
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #334155;
+            overflow-y: auto;
+            max-height: 450px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85em;
+        }
+        th, td {
+            text-align: left;
+            padding: 6px;
+            border-bottom: 1px solid #334155;
+        }
+        th { color: #94a3b8; }
+        .val-up { color: var(--green); }
+        .val-down { color: var(--red); }
+        
+        .brain-tag {
+            display: inline-block;
+            font-size: 0.75em;
+            padding: 2px 4px;
+            border-radius: 4px;
+            margin-right: 2px;
+            background: #333;
+        }
+
+        button {
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1em;
+            font-weight: bold;
+        }
+        button:hover { filter: brightness(1.1); }
+        
+        .info-bar {
+            margin-top: 10px;
+            display: flex;
+            gap: 20px;
+            font-size: 1.2em;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>📈 AI 股市神經網路進化</h1>
+        <div>
+            <button onclick="toggleSim()" id="btn-toggle">開始模擬</button>
+        </div>
+    </div>
+
+    <div class="info-bar">
+        <span>世代: <b id="gen-display" style="color:var(--accent)">1</b></span>
+        <span>倒數: <b id="timer-display" style="color:var(--red)">30</b>s</span>
+        <span>當前股價: <b id="price-display">100.00</b></span>
+    </div>
+
+    <div class="main-view">
+        <div class="chart-box">
+            <canvas id="marketCanvas" width="800" height="400"></canvas>
+        </div>
+        <div class="stats-box">
+            <h3>機器人排名 (Top 10)</h3>
+            <p style="font-size:0.8em; color:#888;">AI 邏輯 = (趨勢 * W1) + (價格位置 * W2)</p>
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>資產</th>
+                        <th>AI 權重 (腦)</th>
+                        <th>持倉</th>
+                    </tr>
+                </thead>
+                <tbody id="robot-list"></tbody>
+            </table>
+        </div>
+    </div>
+
+<script>
+    // --- 設定 ---
+    const ROBOT_COUNT = 10;
+    const ROUND_TIME = 30;
+    const START_MONEY = 10000;
+    
+    // --- 全局變數 ---
+    let marketPrice = 100;
+    let priceHistory = [];
+    let robots = [];
+    let generation = 1;
+    let timer = ROUND_TIME;
+    let isRunning = false;
+    let frameId;
+    let lastTime = 0;
+    let marketTrend = 0; // 價格變化量
+
+    // Canvas
+    const canvas = document.getElementById('marketCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // --- AI 機器人類 (簡單神經網路) ---
+    class Robot {
+        constructor(brain = null) {
+            this.cash = START_MONEY;
+            this.shares = 0;
+            this.color = `hsl(${Math.random() * 360}, 70%, 60%)`;
+
+            // 如果有繼承大腦(權重)，則使用繼承的，否則隨機初始化
+            if (brain) {
+                this.weights = { ...brain };
+            } else {
+                // 隨機初始化權重 -1.0 到 1.0
+                this.weights = {
+                    w_trend: (Math.random() * 2) - 1,   // 對趨勢的反應 (正=追漲, 負=逆勢)
+                    w_value: (Math.random() * 2) - 1,   // 對價格高低的反應 (負=低買高賣, 正=越貴越買)
+                    bias: (Math.random() * 0.5) - 0.25  // 偏差值 (天生愛買或天生愛賣)
+                };
+            }
+        }
+
+        // 資產總值
+        getNetWorth(price) {
+            return this.cash + (this.shares * price);
+        }
+
+        // AI 思考與行動
+        think(price, trend, avgPrice) {
+            // 1. 正規化輸入數據 (Normalize Inputs)
+            // Trend: 變化量 (限制在 -5 到 5 之間比較好計算)
+            let inputTrend = Math.max(-5, Math.min(5, trend)); 
+            // Value: 當前價格相對於歷史均價的比例 (例如 1.1 表示比均價貴10%)
+            let inputValue = (price - avgPrice) / avgPrice; 
+
+            // 2. 神經網路計算 (Perceptron)
+            // Output = (Input1 * W1) + (Input2 * W2) + Bias
+            let output = (inputTrend * this.weights.w_trend) + 
+                         (inputValue * 10 * this.weights.w_value) + // 放大價格權重影響
+                         this.weights.bias;
+
+            // 3. 激活函數 (Activation) -> 決定買賣
+            // 如果 output > 0.5 -> 買
+            // 如果 output < -0.5 -> 賣
+            
+            if (output > 0.5) {
+                this.buy(price);
+            } else if (output < -0.5) {
+                this.sell(price);
+            }
+        }
+
+        buy(price) {
+            if (this.cash >= price) {
+                // 每次投入 20% 現金
+                let invest = this.cash * 0.2;
+                if (invest < price) invest = this.cash; // 錢太少梭哈
+                let amount = Math.floor(invest / price);
+                if (amount > 0) {
+                    this.cash -= amount * price;
+                    this.shares += amount;
+                }
+            }
+        }
+
+        sell(price) {
+            if (this.shares > 0) {
+                // 每次賣出 30% 持倉
+                let amount = Math.ceil(this.shares * 0.3);
+                this.shares -= amount;
+                this.cash += amount * price;
+            }
+        }
+    }
+
+    // --- 系統功能 ---
+
+    function initGame() {
+        robots = [];
+        for(let i=0; i<ROBOT_COUNT; i++) robots.push(new Robot());
+        resetMarket();
+        updateUI();
+    }
+
+    function resetMarket() {
+        marketPrice = 100;
+        priceHistory = [100];
+        timer = ROUND_TIME;
+    }
+
+    // 更新市場價格 (隨機漫步 + 波動)
+    function updateMarket() {
+        let change = (Math.random() - 0.5) * 4; // 基本波動
+        // 加入一點點慣性
+        marketTrend = change;
+        marketPrice += change;
+        if (marketPrice < 10) marketPrice = 10; // 地板價
+        
+        priceHistory.push(marketPrice);
+        if (priceHistory.length > canvas.width) priceHistory.shift();
+
+        // 計算歷史均價 (給 AI 參考用)
+        let sum = 0;
+        let count = Math.min(priceHistory.length, 50); // 只看最近50點
+        for(let i=1; i<=count; i++) {
+            sum += priceHistory[priceHistory.length - i];
+        }
+        let avgPrice = sum / count;
+
+        // 讓所有機器人思考
+        robots.forEach(bot => bot.think(marketPrice, marketTrend, avgPrice));
+    }
+
+    // 進化 (核心邏輯)
+    function evolve() {
+        // 1. 排名
+        robots.sort((a, b) => b.getNetWorth(marketPrice) - a.getNetWorth(marketPrice));
+        
+        // 2. 顯示這一代的冠軍
+        console.log(`第 ${generation} 代結束。冠軍資產: $${robots[0].getNetWorth(marketPrice).toFixed(0)}`);
+        
+        // 3. 選取基因庫 (前 4 名)
+        const survivors = robots.slice(0, 4);
+        const newRobots = [];
+
+        // 4. 菁英保留 (Elitism): 第一名直接晉級，不變異
+        newRobots.push(new Robot(survivors[0].weights));
+
+        // 5. 繁殖與融合 (Crossover & Mutation)
+        while (newRobots.length < ROBOT_COUNT) {
+            // 隨機選兩個父母
+            let p1 = survivors[Math.floor(Math.random() * survivors.length)];
+            let p2 = survivors[Math.floor(Math.random() * survivors.length)];
+
+            // 融合權重 (取平均值)
+            let childWeights = {
+                w_trend: (p1.weights.w_trend + p2.weights.w_trend) / 2,
+                w_value: (p1.weights.w_value + p2.weights.w_value) / 2,
+                bias: (p1.weights.bias + p2.weights.bias) / 2
+            };
+
+            // 突變 (Mutation): 20% 機率發生基因突變
+            if (Math.random() < 0.2) {
+                childWeights.w_trend += (Math.random() - 0.5) * 0.5;
+                childWeights.w_value += (Math.random() - 0.5) * 0.5;
+            }
+
+            newRobots.push(new Robot(childWeights));
+        }
+
+        robots = newRobots;
+        generation++;
+        resetMarket();
+    }
+
+    // --- 繪圖與 UI ---
+
+    function draw() {
+        // 背景
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        // 網格線
+        ctx.strokeStyle = '#1e293b';
+        ctx.beginPath();
+        for(let i=0; i<canvas.height; i+=50) { ctx.moveTo(0,i); ctx.lineTo(canvas.width,i); }
+        ctx.stroke();
+
+        // 股價線
+        if (priceHistory.length > 1) {
+            ctx.strokeStyle = marketTrend >= 0 ? '#22c55e' : '#ef4444';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            
+            // 自動縮放 Y 軸
+            let maxP = Math.max(...priceHistory) + 10;
+            let minP = Math.min(...priceHistory) - 10;
+            let range = maxP - minP || 1;
+            
+            const getY = (p) => canvas.height - ((p - minP) / range * canvas.height);
+
+            ctx.moveTo(0, getY(priceHistory[0]));
+            for(let i=1; i<priceHistory.length; i++) {
+                ctx.lineTo(i * (canvas.width / priceHistory.length), getY(priceHistory[i]));
+            }
+            ctx.stroke();
+        }
+    }
+
+    function updateUI() {
+        document.getElementById('price-display').innerText = marketPrice.toFixed(2);
+        document.getElementById('price-display').className = marketTrend >= 0 ? 'val-up' : 'val-down';
+        document.getElementById('timer-display').innerText = timer;
+        document.getElementById('gen-display').innerText = generation;
+
+        // 更新排行榜
+        let sorted = [...robots].sort((a, b) => b.getNetWorth(marketPrice) - a.getNetWorth(marketPrice));
+        let html = '';
+        sorted.forEach((bot, index) => {
+            let nw = bot.getNetWorth(marketPrice).toFixed(0);
+            let shareColor = bot.shares > 0 ? 'val-up' : '';
+            
+            // 格式化權重顯示
+            let w1 = bot.weights.w_trend.toFixed(2); // 趨勢權重
+            let w2 = bot.weights.w_value.toFixed(2); // 價值權重
+            
+            html += `<tr>
+                <td>${index+1}</td>
+                <td>$${nw}</td>
+                <td>
+                    <span class="brain-tag" style="color:${w1>0?'#81c784':'#e57373'}">W1趨勢: ${w1}</span>
+                    <span class="brain-tag" style="color:${w2>0?'#81c784':'#e57373'}">W2價格: ${w2}</span>
+                </td>
+                <td class="${shareColor}">${bot.shares} 股</td>
+            </tr>`;
+        });
+        document.getElementById('robot-list').innerHTML = html;
+    }
+
+    // --- 主迴圈 ---
+    function loop(timestamp) {
+        if (!isRunning) return;
+
+        // 1秒計時邏輯
+        if (timestamp - lastTime > 1000) {
+            timer--;
+            lastTime = timestamp;
+            if (timer <= 0) {
+                evolve();
+            }
+        }
+
+        updateMarket();
+        draw();
+        
+        // 為了效能，不要每一幀都更新 DOM 表格，改為每 10 幀更新一次
+        if (Math.floor(timestamp) % 10 === 0) updateUI();
+
+        frameId = requestAnimationFrame(loop);
+    }
+
+    function toggleSim() {
+        if (isRunning) {
+            isRunning = false;
+            cancelAnimationFrame(frameId);
+            document.getElementById('btn-toggle').innerText = "繼續模擬";
+            document.getElementById('btn-toggle').style.background = "#22c55e";
+        } else {
+            if (robots.length === 0) initGame();
+            isRunning = true;
+            lastTime = performance.now();
+            loop(performance.now());
+            document.getElementById('btn-toggle').innerText = "暫停";
+            document.getElementById('btn-toggle').style.background = "#ef4444";
+        }
+    }
+
+    // 初始畫面
+    draw();
+    initGame();
+
+</script>
+</body>
+</html>
