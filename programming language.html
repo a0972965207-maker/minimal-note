@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MiniCode Engine</title>
+    <style>
+        :root { --bg: #1e1e1e; --panel: #252526; --text: #d4d4d4; --accent: #007acc; --border: #333; }
+        * { box-sizing: border-box; margin: 0; padding: 0; outline: none; font-family: 'Consolas', 'Monaco', monospace; }
+        body { background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        
+        /* 頂部控制列 */
+        #toolbar { height: 40px; background: var(--panel); border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 10px; gap: 10px; }
+        input, select, button { background: #3c3c3c; border: 1px solid var(--border); color: white; padding: 4px 8px; font-size: 12px; border-radius: 2px; }
+        button:hover { background: var(--accent); cursor: pointer; }
+        button:active { transform: translateY(1px); }
+        .spacer { flex-grow: 1; }
+
+        /* 主佈局：左中右 */
+        #workspace { display: grid; grid-template-columns: 1fr 1fr 1fr; height: calc(100vh - 40px); }
+        .panel { display: flex; flex-direction: column; border-right: 1px solid var(--border); min-width: 0; }
+        .panel-header { background: #2d2d2d; padding: 5px 10px; font-size: 11px; text-transform: uppercase; color: #888; border-bottom: 1px solid var(--border); }
+        
+        /* 左：編輯器 */
+        #editor { flex: 1; background: var(--bg); color: #dcdcaa; border: none; resize: none; padding: 10px; font-size: 14px; line-height: 1.5; white-space: pre; overflow: auto; }
+        
+        /* 中：顯示 (Iframe) */
+        #preview-frame { flex: 1; background: white; border: none; width: 100%; height: 100%; }
+        
+        /* 右：終端 */
+        #terminal { flex: 1; background: #000; padding: 10px; overflow-y: auto; font-size: 13px; color: #ccc; }
+        .log-info { color: #ccc; }
+        .log-error { color: #f48771; }
+        .log-sys { color: #007acc; font-style: italic; }
+
+        /* 滾動條樣式 */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-thumb { background: #424242; }
+    </style>
+    <!-- 引入 Pyodide (Python運行環境)，但在此腳本中我們只在需要時加載它 -->
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.23.4/full/pyodide.js"></script>
+</head>
+<body>
+
+    <div id="toolbar">
+        <button onclick="newProject()">新建</button>
+        <input type="text" id="projName" placeholder="專案名稱" value="MyProject">
+        <select id="langSelect" onchange="switchLang()">
+            <option value="js">JavaScript</option>
+            <option value="py">Python</option>
+        </select>
+        <button onclick="runCode()" style="background: #2da042;">▶ 運行</button>
+        <div class="spacer"></div>
+        <button onclick="importLib()">導入庫(CDN)</button>
+        <button onclick="exportProject()">導出專案 (.json)</button>
+        <input type="file" id="fileInput" style="display:none" onchange="loadProject(this)">
+        <button onclick="document.getElementById('fileInput').click()">導入專案</button>
+    </div>
+
+    <div id="workspace">
+        <!-- 左邊：編程 -->
+        <div class="panel">
+            <div class="panel-header">Code Editor</div>
+            <textarea id="editor" spellcheck="false" placeholder="// 在此輸入代碼..."></textarea>
+        </div>
+
+        <!-- 中間：顯示 (DOM/Canvas) -->
+        <div class="panel">
+            <div class="panel-header">Preview / Display</div>
+            <iframe id="preview-frame"></iframe>
+        </div>
+
+        <!-- 右邊：終端 -->
+        <div class="panel" style="border-right: none;">
+            <div class="panel-header">Terminal / Console</div>
+            <div id="terminal"></div>
+        </div>
+    </div>
+
+    <script>
+        // 核心狀態
+        let pyodide = null;
+        let pyodideReady = false;
+        const terminal = document.getElementById('terminal');
+        const editor = document.getElementById('editor');
+        const preview = document.getElementById('preview-frame');
+        
+        // 默認代碼模版
+        const templates = {
+            js: `// JavaScript Demo\nconsole.log("Hello from JS!");\ndocument.body.innerHTML = "<h1>Hello World</h1>";\n// 支持標準 DOM 操作`,
+            py: `# Python Demo\nimport sys\nprint("Hello from Python!")\n# 注意：Python 無法直接操作中間的 DOM，僅輸出到終端`
+        };
+
+        // 初始化
+        editor.value = templates.js;
+        
+        // Tab 鍵支持
+        editor.addEventListener('keydown', function(e) {
+            if (e.key == 'Tab') {
+                e.preventDefault();
+                const start = this.selectionStart;
+                const end = this.selectionEnd;
+                this.value = this.value.substring(0, start) + "    " + this.value.substring(end);
+                this.selectionStart = this.selectionEnd = start + 4;
+            }
+        });
+
+        // 終端輸出函數
+        function log(msg, type = 'info') {
+            const div = document.createElement('div');
+            div.textContent = typeof msg === 'object' ? JSON.stringify(msg) : msg;
+            div.className = `log-${type}`;
+            terminal.appendChild(div);
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+
+        function clearTerminal() { terminal.innerHTML = ''; }
+
+        // 切換語言
+        function switchLang() {
+            const lang = document.getElementById('langSelect').value;
+            // 簡單切換，實際應用可能需要保存當前代碼狀態
+            if(confirm("切換語言將重置當前編輯器，確定嗎？")) {
+                editor.value = templates[lang];
+                clearTerminal();
+                log(`已切換至 ${lang.toUpperCase()}`, 'sys');
+            }
+        }
+
+        // 導入庫邏輯
+        function importLib() {
+            const lang = document.getElementById('langSelect').value;
+            if (lang === 'js') {
+                const url = prompt("請輸入 JS 庫的 CDN 地址 (例如 jQuery):", "https://code.jquery.com/jquery-3.6.0.min.js");
+                if(url) {
+                    editor.value = `// Lib Loaded: ${url}\n` + editor.value;
+                    log(`JS 庫已標記，將在運行時注入。`, 'sys');
+                }
+            } else {
+                const pkg = prompt("請輸入 Python 包名稱 (需 Pyodide 支持，如 numpy, pandas):", "numpy");
+                if(pkg) {
+                    editor.value = `# pip install ${pkg}\n` + editor.value;
+                    log(`Python 包 ${pkg} 將在運行時嘗試加載...`, 'sys');
+                }
+            }
+        }
+
+        // 運行代碼核心邏輯
+        async function runCode() {
+            clearTerminal();
+            const lang = document.getElementById('langSelect').value;
+            const code = editor.value;
+
+            if (lang === 'js') {
+                runJS(code);
+            } else {
+                await runPython(code);
+            }
+        }
+
+        // JavaScript 運行器 (使用 Iframe 隔離)
+        function runJS(code) {
+            log("Running JavaScript...", "sys");
+            
+            // 提取 CDN 鏈接 (簡單的正則匹配)
+            const cdnRegex = /\/\/ Lib Loaded: (.*)/g;
+            let scripts = "";
+            let match;
+            while ((match = cdnRegex.exec(code)) !== null) {
+                scripts += `<script src="${match[1]}"><\/script>`;
+            }
+
+            // 構建 Iframe 內容
+            const htmlContent = `
+                <html>
+                <head>
+                    ${scripts}
+                    <style>body{font-family:sans-serif;padding:10px;}</style>
+                </head>
+                <body>
+                    <div id="app"></div>
+                    <script>
+                        // 重寫 console.log 發送回主窗口
+                        const originalLog = console.log;
+                        console.log = function(...args) {
+                            window.parent.postMessage({type: 'log', msg: args}, '*');
+                            originalLog.apply(console, args);
+                        };
+                        window.onerror = function(msg, url, line) {
+                            window.parent.postMessage({type: 'error', msg: msg + " (Line " + line + ")"}, '*');
+                        };
+                        
+                        try {
+                            ${code}
+                        } catch (e) {
+                            console.error(e);
+                        }
+                    <\/script>
+                </body>
+                </html>
+            `;
+            
+            const blob = new Blob([htmlContent], {type: 'text/html'});
+            preview.src = URL.createObjectURL(blob);
+        }
+
+        // 監聽 Iframe 的 console 消息
+        window.addEventListener('message', (event) => {
+            if (event.data.type === 'log') {
+                log(event.data.msg.join(' '), 'info');
+            } else if (event.data.type === 'error') {
+                log(event.data.msg, 'error');
+            }
+        });
+
+        // Python 運行器 (Pyodide)
+        async function runPython(code) {
+            log("Initializing Python Environment...", "sys");
+            
+            if (!pyodideReady) {
+                try {
+                    log("Loading Pyodide engine (first time only)...", "sys");
+                    pyodide = await loadPyodide();
+                    
+                    // 重定向 Python stdout 到我們的終端
+                    pyodide.setStdout({ batched: (msg) => log(msg, 'info') });
+                    pyodide.setStderr({ batched: (msg) => log(msg, 'error') });
+                    
+                    await pyodide.loadPackage("micropip");
+                    pyodideReady = true;
+                    log("Python Ready.", "sys");
+                } catch (e) {
+                    log("Failed to load Pyodide: " + e, 'error');
+                    return;
+                }
+            }
+
+            // 檢查是否需要安裝庫 (# pip install package)
+            const installRegex = /#\s*pip\s+install\s+([a-zA-Z0-9_-]+)/g;
+            let match;
+            const micropip = pyodide.pyimport("micropip");
+            
+            while ((match = installRegex.exec(code)) !== null) {
+                const pkg = match[1];
+                log(`Installing ${pkg}...`, 'sys');
+                try {
+                    await micropip.install(pkg);
+                    log(`${pkg} installed.`, 'sys');
+                } catch (e) {
+                    log(`Error installing ${pkg}: ${e}`, 'error');
+                }
+            }
+
+            try {
+                log("Executing Python...", "sys");
+                // 重置預覽區，因為 Python 主要看終端
+                preview.srcdoc = "<html><body><h3 style='color:#888;text-align:center;margin-top:20px'>Python Mode: See Terminal -></h3></body></html>";
+                await pyodide.runPythonAsync(code);
+            } catch (e) {
+                log(e, 'error');
+            }
+        }
+
+        // 專案管理
+        function newProject() {
+            if(confirm("新建專案將清空當前內容，確定嗎？")) {
+                editor.value = "";
+                clearTerminal();
+                document.getElementById('projName').value = "NewProject";
+            }
+        }
+
+        function exportProject() {
+            const data = {
+                name: document.getElementById('projName').value,
+                lang: document.getElementById('langSelect').value,
+                code: editor.value,
+                timestamp: new Date().toISOString()
+            };
+            const blob = new Blob([JSON.stringify(data)], {type: 'application/json'});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${data.name}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+            log("專案已導出到您的裝置。", "sys");
+        }
+
+        function loadProject(input) {
+            const file = input.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    document.getElementById('projName').value = data.name;
+                    document.getElementById('langSelect').value = data.lang;
+                    editor.value = data.code;
+                    log(`專案 ${data.name} 導入成功。`, "sys");
+                } catch (err) {
+                    log("導入失敗：文件格式錯誤", "error");
+                }
+            };
+            reader.readAsText(file);
+            input.value = ''; // 重置 input 以便重複導入同名文件
+        }
+    </script>
+</body>
+</html>
