@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>進化版生命遊戲 (平板觸控版)</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #111;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: white;
+            touch-action: none; /* 禁止瀏覽器預設觸控行為 */
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #ui-layer {
+            position: absolute;
+            bottom: 20px;
+            left: 0;
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            pointer-events: none; /* 讓點擊穿透到畫布，除非點到按鈕 */
+        }
+
+        .btn {
+            pointer-events: auto;
+            background: rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            color: white;
+            padding: 15px 25px;
+            font-size: 18px;
+            border-radius: 30px;
+            backdrop-filter: blur(5px);
+            user-select: none;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .btn:active {
+            background: rgba(255, 255, 255, 0.5);
+            transform: scale(0.95);
+        }
+
+        #stats {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 8px;
+            font-size: 14px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="stats">
+        <div>活體細胞: <span id="count">0</span></div>
+        <div>突變次數: <span id="mutations">0</span></div>
+        <div style="font-size: 12px; color: #aaa;">點擊螢幕繪製 / 規則導致死亡會觸發突變</div>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="ui-layer">
+        <button class="btn" id="toggleBtn">開始 / 暫停</button>
+        <button class="btn" id="clearBtn">清空</button>
+        <button class="btn" id="randomBtn">隨機填充</button>
+    </div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    // 設定
+    let resolution = 15; // 方塊大小 (適合手指觸控)
+    let cols, rows;
+    let grid;
+    let deathGrid; // 紀錄上一幀哪裡發生了死亡，以及是什麼規則導致的
+    let isRunning = false;
+    let mutationCount = 0;
+    
+    // 初始化
+    function setup() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        cols = Math.floor(canvas.width / resolution);
+        rows = Math.floor(canvas.height / resolution);
+        
+        grid = createGrid();
+        deathGrid = createGrid(); // 儲存死亡資訊
+        
+        // 隨機初始化一些方塊
+        randomizeGrid();
+        draw();
+    }
+
+    function createGrid() {
+        // 建立二維陣列
+        let arr = new Array(cols);
+        for (let i = 0; i < arr.length; i++) {
+            arr[i] = new Array(rows);
+            for (let j = 0; j < arr[i].length; j++) {
+                // 每個格子是一個物件
+                arr[i][j] = {
+                    alive: false,
+                    age: 0,
+                    // 基因 (B/S 規則)
+                    birth: [3],      // 預設 B3
+                    survival: [2, 3], // 預設 S23
+                    color: '#00ff00',
+                    mutated: false // 用於視覺效果
+                };
+            }
+        }
+        return arr;
+    }
+
+    // 產生隨機規則
+    function generateRandomRule() {
+        let b = [];
+        let s = [];
+        // 隨機決定 B (0-8)
+        for(let i=1; i<=8; i++) if(Math.random() > 0.7) b.push(i);
+        if(b.length === 0) b.push(3); // 避免無規則，保底 B3
+
+        // 隨機決定 S (0-8)
+        for(let i=0; i<=8; i++) if(Math.random() > 0.6) s.push(i);
+        
+        return { b, s };
+    }
+
+    // 根據規則生成顏色 (Hash)
+    function getRuleColor(b, s) {
+        let str = "B" + b.join("") + "S" + s.join("");
+        let hash = 0;
+        for (let i = 0; i < str.length; i++) {
+            hash = str.charCodeAt(i) + ((hash << 5) - hash);
+        }
+        let h = Math.abs(hash % 360);
+        return `hsl(${h}, 70%, 60%)`;
+    }
+
+    function randomizeGrid() {
+        for (let i = 0; i < cols; i++) {
+            for (let j = 0; j < rows; j++) {
+                grid[i][j].alive = Math.random() > 0.85;
+                if (grid[i][j].alive) {
+                    // 初始隨機化一些規則，增加多樣性
+                    if (Math.random() > 0.5) {
+                        let rule = generateRandomRule();
+                        grid[i][j].birth = rule.b;
+                        grid[i][j].survival = rule.s;
+                        grid[i][j].color = getRuleColor(rule.b, rule.s);
+                    }
+                }
+            }
+        }
+        draw();
+    }
+
+    // --- 核心邏輯 ---
+
+    function update() {
+        let nextGrid = createGrid();
+        let nextDeathGrid = createGrid(); // 這一幀發生的死亡
+        let liveCount = 0;
+
+        // 1. 計算生存與死亡，並記錄死亡原因
+        for (let i = 0; i < cols; i++) {
+            for (let j = 0; j < rows; j++) {
+                let cell = grid[i][j];
+                let neighbors = countNeighbors(grid, i, j);
+                
+                // 繼承資料
+                nextGrid[i][j].birth = cell.birth;
+                nextGrid[i][j].survival = cell.survival;
+                nextGrid[i][j].color = cell.color;
+
+                if (cell.alive) {
+                    // 檢查是否存活 (S 規則)
+                    if (cell.survival.includes(neighbors)) {
+                        nextGrid[i][j].alive = true;
+                        nextGrid[i][j].age = cell.age + 1;
+                        liveCount++;
+                    } else {
+                        // **死亡發生**：記錄這是因為什麼規則導致的死亡
+                        nextGrid[i][j].alive = false;
+                        nextDeathGrid[i][j] = {
+                            isDeadBody: true,
+                            killerRuleB: cell.birth, // 記錄死者持有的規則
+                            killerRuleS: cell.survival
+                        };
+                    }
+                } else {
+                    // 檢查是否誕生 (B 規則)
+                    // 這裡簡化：如果有 3 個鄰居，我們嘗試從鄰居繼承規則
+                    // 因為死細胞本身沒有規則，必須從父母繼承
+                    if (neighbors === 3) { // 這裡暫時用標準3，或者我們可以檢查周圍鄰居是否允許出生
+                        let parent = getDominantParent(grid, i, j);
+                        if (parent && parent.birth.includes(neighbors)) {
+                            nextGrid[i][j].alive = true;
+                            nextGrid[i][j].birth = parent.birth;
+                            nextGrid[i][j].survival = parent.survival;
+                            nextGrid[i][j].color = parent.color;
+                            liveCount++;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. 檢查「恐慌突變」
+        // 活著的方塊檢查周圍上一幀(或當下這幀剛死)的屍體
+        // 如果發現很多屍體拿著跟我一樣的規則，我就突變
+        for (let i = 0; i < cols; i++) {
+            for (let j = 0; j < rows; j++) {
+                if (nextGrid[i][j].alive) {
+                    let myB = nextGrid[i][j].birth.join(',');
+                    let myS = nextGrid[i][j].survival.join(',');
+                    
+                    let sameRuleDeaths = 0;
+
+                    // 檢查周圍 3x3 範圍內的死亡事件 (使用 nextDeathGrid，即剛剛發生的死亡)
+                    for (let x = -1; x < 2; x++) {
+                        for (let y = -1; y < 2; y++) {
+                            if (x === 0 && y === 0) continue;
+                            let col = (i + x + cols) % cols;
+                            let row = (j + y + rows) % rows;
+                            
+                            let corpse = nextDeathGrid[col][row];
+                            if (corpse && corpse.isDeadBody) {
+                                // 檢查屍體的規則是否跟我一樣
+                                let deadB = corpse.killerRuleB.join(',');
+                                let deadS = corpse.killerRuleS.join(',');
+                                
+                                if (deadB === myB && deadS === myS) {
+                                    sameRuleDeaths++;
+                                }
+                            }
+                        }
+                    }
+
+                    // 如果周圍有同規則的夥伴死亡，觸發突變
+                    // 閾值設為 1，表示只要看到一個同類死掉就開始慌張 (可以調整為 2)
+                    if (sameRuleDeaths >= 1) {
+                        let newRule = generateRandomRule();
+                        nextGrid[i][j].birth = newRule.b;
+                        nextGrid[i][j].survival = newRule.s;
+                        nextGrid[i][j].color = getRuleColor(newRule.b, newRule.s);
+                        nextGrid[i][j].mutated = true; // 標記用於渲染閃光
+                        mutationCount++;
+                    }
+                }
+            }
+        }
+
+        grid = nextGrid;
+        deathGrid = nextDeathGrid;
+        
+        document.getElementById('count').innerText = liveCount;
+        document.getElementById('mutations').innerText = mutationCount;
+        
+        draw();
+        
+        if (isRunning) {
+            requestAnimationFrame(update);
+        }
+    }
+
+    function countNeighbors(grid, x, y) {
+        let sum = 0;
+        for (let i = -1; i < 2; i++) {
+            for (let j = -1; j < 2; j++) {
+                let col = (x + i + cols) % cols;
+                let row = (y + j + rows) % rows;
+                if (grid[col][row].alive) {
+                    sum += 1;
+                }
+            }
+        }
+        if (grid[x][y].alive) sum -= 1;
+        return sum;
+    }
+
+    // 獲取周圍一個活著的鄰居作為父母來遺傳規則
+    function getDominantParent(grid, x, y) {
+        // 簡單版：隨機找一個活著的鄰居
+        let parents = [];
+        for (let i = -1; i < 2; i++) {
+            for (let j = -1; j < 2; j++) {
+                let col = (x + i + cols) % cols;
+                let row = (y + j + rows) % rows;
+                if (grid[col][row].alive) {
+                    parents.push(grid[col][row]);
+                }
+            }
+        }
+        if (parents.length > 0) {
+            return parents[Math.floor(Math.random() * parents.length)];
+        }
+        return null;
+    }
+
+    function draw() {
+        ctx.fillStyle = '#111';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        for (let i = 0; i < cols; i++) {
+            for (let j = 0; j < rows; j++) {
+                let x = i * resolution;
+                let y = j * resolution;
+
+                if (grid[i][j].alive) {
+                    ctx.fillStyle = grid[i][j].color;
+                    
+                    // 如果剛突變，畫成白色閃光
+                    if (grid[i][j].mutated) {
+                        ctx.fillStyle = '#fff';
+                        grid[i][j].mutated = false; // 重置
+                    }
+                    
+                    // 畫圓角方塊 (比較好看)
+                    ctx.beginPath();
+                    ctx.roundRect(x + 1, y + 1, resolution - 2, resolution - 2, 2);
+                    ctx.fill();
+                } else if (deathGrid[i][j] && deathGrid[i][j].isDeadBody) {
+                    // 畫出剛死掉的地方 (淡淡的紅色殘影)
+                    ctx.fillStyle = 'rgba(255, 0, 0, 0.2)';
+                    ctx.fillRect(x+4, y+4, resolution-8, resolution-8);
+                }
+            }
+        }
+    }
+
+    // --- 互動控制 ---
+
+    function handleInput(e) {
+        e.preventDefault(); // 防止滾動
+        let touches = e.touches || [e]; // 支援 touch 和 mouse
+        
+        for (let i = 0; i < touches.length; i++) {
+            let t = touches[i];
+            let x = Math.floor(t.clientX / resolution);
+            let y = Math.floor(t.clientY / resolution);
+
+            if (x >= 0 && x < cols && y >= 0 && y < rows) {
+                if (!grid[x][y].alive) {
+                    grid[x][y].alive = true;
+                    // 手繪的細胞給予標準規則或隨機規則
+                    grid[x][y].birth = [3];
+                    grid[x][y].survival = [2, 3];
+                    grid[x][y].color = '#00ff00'; // 經典綠
+                }
+            }
+        }
+        if (!isRunning) draw();
+    }
+
+    // 事件監聽
+    canvas.addEventListener('touchstart', handleInput, {passive: false});
+    canvas.addEventListener('touchmove', handleInput, {passive: false});
+    canvas.addEventListener('mousedown', (e) => {
+        canvas.addEventListener('mousemove', handleInput);
+        handleInput(e);
+    });
+    window.addEventListener('mouseup', () => {
+        canvas.removeEventListener('mousemove', handleInput);
+    });
+
+    document.getElementById('toggleBtn').addEventListener('click', () => {
+        isRunning = !isRunning;
+        if (isRunning) update();
+    });
+
+    document.getElementById('clearBtn').addEventListener('click', () => {
+        grid = createGrid();
+        deathGrid = createGrid();
+        mutationCount = 0;
+        isRunning = false;
+        draw();
+    });
+
+    document.getElementById('randomBtn').addEventListener('click', () => {
+        randomizeGrid();
+    });
+
+    window.addEventListener('resize', setup);
+
+    // 啟動
+    setup();
+
+</script>
+</body>
+</html>
