@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>邏輯門遊戲</title>
+    <style>
+        :root {
+            --bg: #0b1222;
+            --panel: #1e293b;
+            --line: #334155;
+            --text: #e2e8f0;
+            --accent: #facc15;
+            --on: #22c55e;
+        }
+        * { box-sizing: border-box; }
+        html, body { height: 100%; margin: 0; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: system-ui, 'Microsoft JhengHei', 'PingFang TC', sans-serif;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        header {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            padding: 8px 12px;
+            background: var(--panel);
+            border-bottom: 1px solid var(--line);
+        }
+        header h1 { font-size: 18px; margin: 0 12px 0 0; }
+        #tools { display: flex; flex-wrap: wrap; gap: 6px; }
+        .spacer { flex: 1; }
+        select, button {
+            background: #334155;
+            color: var(--text);
+            border: 1px solid #475569;
+            border-radius: 6px;
+            padding: 6px 10px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        button:hover, select:hover { filter: brightness(1.15); }
+        button.danger { background: #7f1d1d; border-color: #991b1b; }
+        #info {
+            font-size: 13px;
+            color: #94a3b8;
+            padding: 6px 12px;
+            background: #0f172a;
+            border-bottom: 1px solid var(--line);
+        }
+        #info b { color: var(--accent); }
+        #stage { position: relative; flex: 1; min-height: 0; }
+        canvas {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            display: block;
+            touch-action: none;
+        }
+        #panel {
+            position: absolute;
+            right: 12px;
+            bottom: 12px;
+            background: rgba(30, 41, 59, 0.94);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 10px 12px;
+            font-size: 13px;
+            display: none;
+        }
+        #panel table { border-collapse: collapse; }
+        #panel th, #panel td {
+            padding: 3px 10px;
+            text-align: center;
+            border-bottom: 1px solid #334155;
+        }
+        #panel th { color: #94a3b8; font-weight: normal; }
+        #win { font-size: 15px; font-weight: bold; color: var(--accent); margin-bottom: 6px; }
+        .ok { color: var(--on); }
+        .bad { color: #f87171; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>⚡ 邏輯門遊戲</h1>
+        <select id="mode"></select>
+        <div id="tools"></div>
+        <span class="spacer"></span>
+        <button id="del" class="danger">刪除選取</button>
+        <button id="reset">重置</button>
+    </header>
+    <div id="info"></div>
+    <div id="stage">
+        <canvas id="c"></canvas>
+        <div id="panel"></div>
+    </div>
+
+<script>
+// ---------- 元件定義 ----------
+const DEFS = {
+    switch: { label: '開關', inputs: 0, outputs: 1, w: 100, color: '#0369a1' },
+    lever:  { label: '拉桿', inputs: 0, outputs: 1, w: 100, color: '#0369a1' },
+    and:    { label: '與門 AND', inputs: 2, outputs: 1, w: 116, color: '#6d28d9', sym: '&' },
+    or:     { label: '或門 OR',  inputs: 2, outputs: 1, w: 116, color: '#6d28d9', sym: '≥1' },
+    not:    { label: '非門 NOT', inputs: 1, outputs: 1, w: 116, color: '#6d28d9', sym: '1' },
+    light:  { label: '燈光', inputs: 1, outputs: 0, w: 100, color: '#a16207' }
+};
+const HH = 22;          // 標題列高度
+const BH = 56;          // 本體高度
+const NH = HH + BH;     // 元件總高度
+const PORT_R = 6;       // 端點半徑
+const HIT_R = 12;       // 端點點擊範圍
+
+// ---------- 關卡 ----------
+// inputs 是固定的輸入元件（不能刪除），expr 是期望的輸出函式
+const LEVELS = [
+    { title: '點亮燈', desc: '讓燈光跟著開關走：按住開關燈亮，放開燈暗。',
+      inputs: [{ id: 'A', name: 'A', type: 'switch' }],
+      expr: ([a]) => a },
+    { title: '反相', desc: '按住開關燈暗，放開燈亮。提示：試試非門 NOT。',
+      inputs: [{ id: 'A', name: 'A', type: 'switch' }],
+      expr: ([a]) => !a },
+    { title: '或門', desc: '開關 A 或 拉桿 B 任一通電，燈就亮。提示：或門 OR。',
+      inputs: [{ id: 'A', name: 'A', type: 'switch' }, { id: 'B', name: 'B', type: 'lever' }],
+      expr: ([a, b]) => a || b },
+    { title: '與門', desc: '開關 A 與 拉桿 B 都通電，燈才亮。提示：與門 AND。',
+      inputs: [{ id: 'A', name: 'A', type: 'switch' }, { id: 'B', name: 'B', type: 'lever' }],
+      expr: ([a, b]) => a && b },
+    { title: '組合電路', desc: '燈亮條件：(A 與 B) 或 非 C。A、C 為開關，B 為拉桿。',
+      inputs: [{ id: 'A', name: 'A', type: 'switch' }, { id: 'B', name: 'B', type: 'lever' }, { id: 'C', name: 'C', type: 'switch' }],
+      expr: ([a, b, c]) => (a && b) || !c },
+    { title: '互斥', desc: '只有 A、B 恰好一個通電時燈亮（XOR）。提示：(A 或 B) 與 非(A 與 B)。',
+      inputs: [{ id: 'A', name: 'A', type: 'switch' }, { id: 'B', name: 'B', type: 'lever' }],
+      expr: ([a, b]) => a !== b }
+];
+
+// ---------- 狀態 ----------
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+let mode = null;            // 'sandbox' 或關卡索引字串
+let nodes = [], wires = [];
+let selId = null, drag = null, mouse = { x: 0, y: 0 }, seq = 0;
+const saved = {};
+let done = [];
+try { done = JSON.parse(localStorage.getItem('logic-gate-done') || '[]'); } catch (e) {}
+let lastPanel = '';
+
+function resize() {
+    DPR = window.devicePixelRatio || 1;
+    W = cvs.clientWidth;
+    H = cvs.clientHeight;
+    cvs.width = W * DPR;
+    cvs.height = H * DPR;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+window.addEventListener('resize', resize);
+
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+// ---------- 位置計算 ----------
+function inPos(n, k) {
+    const d = DEFS[n.type];
+    return { x: n.x, y: n.y + HH + BH * (k + 1) / (d.inputs + 1) };
+}
+function outPos(n) {
+    const d = DEFS[n.type];
+    return { x: n.x + d.w, y: n.y + HH + BH / 2 };
+}
+function nodeAt(x, y) {
+    for (let i = nodes.length - 1; i >= 0; i--) {
+        const n = nodes[i];
+        if (x >= n.x && x <= n.x + DEFS[n.type].w && y >= n.y && y <= n.y + NH) return n;
+    }
+    return null;
+}
+function portAt(x, y) {
+    for (let i = nodes.length - 1; i >= 0; i--) {
+        const n = nodes[i], d = DEFS[n.type];
+        for (let k = 0; k < d.inputs; k++) {
+            const p = inPos(n, k);
+            if (Math.hypot(x - p.x, y - p.y) <= HIT_R) return { kind: 'in', node: n, idx: k };
+        }
+        if (d.outputs) {
+            const p = outPos(n);
+            if (Math.hypot(x - p.x, y - p.y) <= HIT_R) return { kind: 'out', node: n };
+        }
+    }
+    return null;
+}
+
+// ---------- 電路模擬 ----------
+// 以迭代方式求穩定狀態（支援任意連線順序；迴圈若不穩定則停在最後一次結果）
+// overrides: Map(輸入元件id -> 布林)，用於關卡檢查時逐一測試所有組合
+function evaluate(nodes, wires, overrides) {
+    let out = new Map(nodes.map(n => [n.id, false]));
+    const src = new Map();
+    for (const w of wires) src.set(w.to + ':' + w.idx, w.from);
+    const inVal = (id, k) => {
+        const f = src.get(id + ':' + k);
+        return f !== undefined && out.get(f) === true;
+    };
+    for (let it = 0; it < 100; it++) {
+        const next = new Map();
+        for (const n of nodes) {
+            const d = DEFS[n.type];
+            let v = false;
+            if (d.inputs === 0) {
+                v = (overrides && overrides.has(n.id)) ? overrides.get(n.id) : !!n.on;
+            } else if (d.outputs > 0) {
+                const a = inVal(n.id, 0), b = inVal(n.id, 1);
+                if (n.type === 'and') v = a && b;
+                else if (n.type === 'or') v = a || b;
+                else if (n.type === 'not') v = !a;
+            }
+            next.set(n.id, v);
+        }
+        let same = true;
+        for (const [k, v] of next) if (out.get(k) !== v) { same = false; break; }
+        out = next;
+        if (same) break;
+    }
+    return { out, inVal };
+}
+
+// 關卡檢查：列出所有輸入組合的期望值與實際值
+function checkLevel(L) {
+    const n = L.inputs.length, rows = [];
+    for (let m = 0; m < (1 << n); m++) {
+        const vals = L.inputs.map((_, i) => !!(m & (1 << (n - 1 - i))));
+        const ov = new Map(L.inputs.map((inp, i) => [inp.id, vals[i]]));
+        const ev = evaluate(nodes, wires, ov);
+        const actual = ev.inVal('OUT', 0);
+        const expected = !!L.expr(vals);
+        rows.push({ vals, expected, actual, ok: actual === expected });
+    }
+    return rows;
+}
+
+// ---------- 繪圖 ----------
+function rr(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+}
+function circ(x, y, r) { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); }
+function wirePath(a, b) {
+    const dx = Math.max(50, Math.abs(b.x - a.x) * 0.5);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.bezierCurveTo(a.x + dx, a.y, b.x - dx, b.y, b.x, b.y);
+}
+function port(x, y, on) {
+    circ(x, y, PORT_R);
+    ctx.fillStyle = on ? '#22c55e' : '#0f172a';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#cbd5e1';
+    ctx.stroke();
+}
+
+function drawNode(n, ev) {
+    const d = DEFS[n.type], w = d.w, h = NH, x = n.x, y = n.y;
+    const sel = n.id === selId;
+
+    rr(x, y, w, h, 10);
+    ctx.fillStyle = '#1e293b';
+    ctx.fill();
+    ctx.save();
+    rr(x, y, w, h, 10);
+    ctx.clip();
+    ctx.fillStyle = d.color;
+    ctx.fillRect(x, y, w, HH);
+    ctx.restore();
+    rr(x, y, w, h, 10);
+    ctx.lineWidth = sel ? 3 : 1.5;
+    ctx.strokeStyle = sel ? '#facc15' : '#64748b';
+    ctx.stroke();
+
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(n.tag ? `${d.label} ${n.tag}` : d.label, x + w / 2, y + HH / 2);
+
+    const cx = x + w / 2, cy = y + HH + BH / 2;
+    ctx.font = '11px sans-serif';
+    ctx.fillStyle = '#94a3b8';
+    ctx.textBaseline = 'alphabetic';
+
+    if (n.type === 'switch') {
+        circ(cx, cy - 4, 13);
+        ctx.fillStyle = n.on ? '#22c55e' : '#334155';
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#cbd5e1';
+        ctx.stroke();
+        ctx.fillText(n.on ? '通電中' : '未通電', cx, y + h - 4);
+    } else if (n.type === 'lever') {
+        const top = y + HH + 8, bot = y + HH + BH - 20;
+        rr(cx - 4, top, 8, bot - top, 4);
+        ctx.fillStyle = '#0f172a';
+        ctx.fill();
+        circ(cx, n.on ? bot : top, 8);
+        ctx.fillStyle = n.on ? '#22c55e' : '#f59e0b';
+        ctx.fill();
+        ctx.fillStyle = '#94a3b8';
+        ctx.fillText(n.on ? '拉下 (通電)' : '拉上 (斷開)', cx, y + h - 4);
+    } else if (n.type === 'light') {
+        const lit = ev.inVal(n.id, 0);
+        const ly = y + 46;
+        if (lit) { ctx.shadowColor = '#fde047'; ctx.shadowBlur = 28; }
+        circ(cx, ly, 14);
+        if (lit) {
+            const g = ctx.createRadialGradient(cx, ly, 2, cx, ly, 14);
+            g.addColorStop(0, '#fffde7');
+            g.addColorStop(1, '#eab308');
+            ctx.fillStyle = g;
+        } else {
+            ctx.fillStyle = '#3f3f46';
+        }
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.fillText(lit ? '亮' : '暗', cx, y + h - 4);
+    } else {
+        ctx.font = 'bold 18px sans-serif';
+        ctx.fillStyle = '#e9d5ff';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(d.sym, cx, cy);
+    }
+
+    for (let k = 0; k < d.inputs; k++) {
+        const p = inPos(n, k);
+        port(p.x, p.y, ev.inVal(n.id, k));
+    }
+    if (d.outputs) {
+        const p = outPos(n);
+        port(p.x, p.y, ev.out.get(n.id));
+    }
+}
+
+function draw(ev) {
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#0b1222';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#132038';
+    for (let x = 0; x < W; x += 24) ctx.fillRect(x, 0, 1, H);
+    for (let y = 0; y < H; y += 24) ctx.fillRect(0, y, W, 1);
+
+    const byId = new Map(nodes.map(n => [n.id, n]));
+    ctx.lineCap = 'round';
+    for (const w of wires) {
+        const a = byId.get(w.from), b = byId.get(w.to);
+        if (!a || !b) continue;
+        wirePath(outPos(a), inPos(b, w.idx));
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = ev.out.get(a.id) ? '#22c55e' : '#475569';
+        ctx.stroke();
+    }
+    if (drag && drag.mode === 'wire') {
+        if (drag.fromKind === 'out') wirePath(outPos(drag.node), mouse);
+        else wirePath(mouse, inPos(drag.node, drag.idx));
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = '#facc15';
+        ctx.setLineDash([8, 6]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+    for (const n of nodes) drawNode(n, ev);
+
+    if (nodes.length === 0) {
+        ctx.fillStyle = '#64748b';
+        ctx.font = '16px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('點上方按鈕新增元件，開始接線', W / 2, H / 2);
+    }
+}
+
+// ---------- 關卡面板 ----------
+function updatePanel() {
+    const panel = document.getElementById('panel');
+    if (mode === 'sandbox') { panel.style.display = 'none'; return; }
+    const L = LEVELS[+mode];
+    const rows = checkLevel(L);
+    const allOk = rows.every(r => r.ok);
+    const html = `<div id="win">${allOk ? '🎉 通關！' : '真值表'}</div>` +
+        `<table><tr>${L.inputs.map(i => `<th>${i.name}</th>`).join('')}<th>期望</th><th>實際</th></tr>` +
+        rows.map(r => `<tr>${r.vals.map(v => `<td>${v ? 1 : 0}</td>`).join('')}` +
+            `<td>${r.expected ? 1 : 0}</td>` +
+            `<td class="${r.ok ? 'ok' : 'bad'}">${r.actual ? 1 : 0} ${r.ok ? '✓' : '✗'}</td></tr>`).join('') +
+        `</table>`;
+    if (html !== lastPanel) { panel.innerHTML = html; lastPanel = html; }
+    panel.style.display = 'block';
+    if (allOk) markDone(+mode);
+}
+
+function markDone(i) {
+    if (done.includes(i)) return;
+    done.push(i);
+    try { localStorage.setItem('logic-gate-done', JSON.stringify(done)); } catch (e) {}
+    buildUI();
+}
+
+// ---------- 編輯操作 ----------
+function connect(from, to, idx) {
+    wires = wires.filter(w => !(w.to === to && w.idx === idx));
+    wires.push({ from, to, idx });
+}
+
+function addNode(type) {
+    const d = DEFS[type];
+    const id = 'n' + (++seq);
+    const off = (nodes.length % 8) * 24;
+    const x = clamp(W / 2 - d.w / 2 - 120 + off, 0, Math.max(0, W - d.w));
+    const y = clamp(H / 2 - NH / 2 - 80 + off, 0, Math.max(0, H - NH));
+    nodes.push({ id, type, x, y, on: false });
+    selId = id;
+}
+
+function deleteSelected() {
+    const n = nodes.find(x => x.id === selId);
+    if (!n || n.locked) return;
+    nodes = nodes.filter(x => x !== n);
+    wires = wires.filter(w => w.from !== n.id && w.to !== n.id);
+    selId = null;
+}
+
+function freshLevel(i) {
+    const L = LEVELS[i];
+    const ns = L.inputs.map((inp, k) => ({
+        id: inp.id, type: inp.type, tag: inp.name,
+        x: 40, y: 110 + k * 120, on: false, locked: true
+    }));
+    ns.push({ id: 'OUT', type: 'light', x: Math.max(360, W - 170), y: 160, on: false, locked: true });
+    return { nodes: ns, wires: [] };
+}
+
+function setState(s) {
+    nodes = s.nodes;
+    wires = s.wires;
+    selId = null;
+    drag = null;
+}
+
+function setMode(m) {
+    if (mode !== null) saved[mode] = { nodes, wires };
+    mode = m;
+    let s = saved[m];
+    if (!s) s = (m === 'sandbox') ? { nodes: [], wires: [] } : freshLevel(+m);
+    setState(s);
+    buildUI();
+}
+
+const SANDBOX_INFO = '操作：拖標題列移動；按住開關通電（放開斷電）；點拉桿切換拉下/拉上；從端點拖到另一端點連線；從已接線的輸入端拖出可拆線；選取後按 Delete 刪除。';
+
+function buildUI() {
+    const sel = document.getElementById('mode');
+    sel.innerHTML = '';
+    const addOpt = (v, t) => {
+        const o = document.createElement('option');
+        o.value = v; o.textContent = t;
+        sel.appendChild(o);
+    };
+    addOpt('sandbox', '🛠 沙盒模式');
+    LEVELS.forEach((L, i) => addOpt(String(i), `${done.includes(i) ? '✅ ' : ''}第${i + 1}關：${L.title}`));
+    sel.value = mode;
+
+    const tools = document.getElementById('tools');
+    tools.innerHTML = '';
+    const types = mode === 'sandbox' ? ['switch', 'lever', 'and', 'or', 'not', 'light'] : ['and', 'or', 'not'];
+    types.forEach(t => {
+        const b = document.createElement('button');
+        b.textContent = '+ ' + DEFS[t].label;
+        b.onclick = () => addNode(t);
+        tools.appendChild(b);
+    });
+
+    const reset = document.getElementById('reset');
+    reset.textContent = mode === 'sandbox' ? '清空' : '重置關卡';
+
+    const info = document.getElementById('info');
+    if (mode === 'sandbox') {
+        info.textContent = SANDBOX_INFO;
+    } else {
+        const L = LEVELS[+mode];
+        info.innerHTML = `<b>第${+mode + 1}關：${L.title}</b>　${L.desc}　操作同沙盒；右下角真值表全部 ✓ 即過關。輸入元件不可刪除。`;
+    }
+}
+
+// ---------- 指標（滑鼠/觸控）操作 ----------
+function pos(e) {
+    const r = cvs.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+cvs.addEventListener('pointerdown', e => {
+    const p = pos(e);
+    mouse = p;
+    cvs.setPointerCapture(e.pointerId);
+
+    const port = portAt(p.x, p.y);
+    if (port) {
+        if (port.kind === 'out') {
+            drag = { mode: 'wire', fromKind: 'out', node: port.node };
+        } else {
+            const idx = wires.findIndex(w => w.to === port.node.id && w.idx === port.idx);
+            if (idx >= 0) {
+                // 從已接線的輸入端拖出：拆掉原線，改由來源輸出端拖曳
+                const srcId = wires[idx].from;
+                wires.splice(idx, 1);
+                drag = { mode: 'wire', fromKind: 'out', node: nodes.find(n => n.id === srcId) };
+            } else {
+                drag = { mode: 'wire', fromKind: 'in', node: port.node, idx: port.idx };
+            }
+        }
+        return;
+    }
+
+    const n = nodeAt(p.x, p.y);
+    if (!n) { selId = null; drag = null; return; }
+    selId = n.id;
+    // 把元件移到最上層
+    nodes = nodes.filter(x => x !== n);
+    nodes.push(n);
+
+    if (p.y - n.y <= HH) {
+        drag = { mode: 'move', node: n, dx: p.x - n.x, dy: p.y - n.y };
+        return;
+    }
+    if (n.type === 'switch') {
+        n.on = true;                       // 按下即通電
+        drag = { mode: 'press', node: n };
+    } else if (n.type === 'lever') {
+        n.on = !n.on;                      // 點一下切換拉上/拉下
+        drag = null;
+    } else {
+        drag = null;
+    }
+});
+
+cvs.addEventListener('pointermove', e => {
+    const p = pos(e);
+    mouse = p;
+    if (!drag) return;
+    if (drag.mode === 'move') {
+        const n = drag.node;
+        n.x = clamp(p.x - drag.dx, 0, Math.max(0, W - DEFS[n.type].w));
+        n.y = clamp(p.y - drag.dy, 0, Math.max(0, H - NH));
+    }
+});
+
+function endPointer(e) {
+    if (!drag) return;
+    mouse = pos(e);
+    if (drag.mode === 'press') {
+        drag.node.on = false;              // 放開即斷電
+    } else if (drag.mode === 'wire') {
+        const port = portAt(mouse.x, mouse.y);
+        if (port) {
+            if (drag.fromKind === 'out' && port.kind === 'in' && port.node !== drag.node) {
+                connect(drag.node.id, port.node.id, port.idx);
+            } else if (drag.fromKind === 'in' && port.kind === 'out' && port.node !== drag.node) {
+                connect(port.node.id, drag.node.id, drag.idx);
+            }
+        }
+    }
+    drag = null;
+}
+cvs.addEventListener('pointerup', endPointer);
+cvs.addEventListener('pointercancel', endPointer);
+
+window.addEventListener('keydown', e => {
+    if ((e.key === 'Delete' || e.key === 'Backspace') &&
+        (e.target === document.body || e.target === cvs)) {
+        e.preventDefault();
+        deleteSelected();
+    }
+});
+
+// ---------- 按鈕 ----------
+document.getElementById('mode').onchange = e => setMode(e.target.value);
+document.getElementById('del').onclick = deleteSelected;
+document.getElementById('reset').onclick = () => {
+    if (mode === 'sandbox') { nodes = []; wires = []; selId = null; }
+    else setState(freshLevel(+mode));
+};
+
+// ---------- 主迴圈 ----------
+function frame() {
+    const ev = evaluate(nodes, wires, null);
+    draw(ev);
+    updatePanel();
+    requestAnimationFrame(frame);
+}
+
+resize();
+setMode('0');
+frame();
+</script>
+</body>
+</html>
